@@ -1,8 +1,8 @@
 import { useState, useMemo, useEffect } from 'react';
 import { 
-  Package, Search, AlertTriangle, TrendingDown, Plus, Minus, 
-  Download, RefreshCw, LogOut, Grid, List, ChevronRight, 
-  BarChart3, Warehouse, Filter, X, Edit3, Save, ChevronDown,
+  Package, Search, AlertTriangle, Plus, Minus, 
+  Download, RefreshCw, LogOut, ChevronRight, 
+  Warehouse, X, Save,
   LayoutDashboard, Boxes, AlertCircle, CheckCircle2
 } from 'lucide-react';
 import { Auth } from './components/Auth';
