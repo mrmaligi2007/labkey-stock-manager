@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Package, Mail, Lock, Loader2, Warehouse, Shield } from 'lucide-react';
+import { Mail, Lock, Loader2, Warehouse, Shield } from 'lucide-react';
 import { supabase } from '../lib/supabase';
 
 interface Props {

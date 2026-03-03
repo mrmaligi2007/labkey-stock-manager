@@ -2,7 +2,7 @@ import { useState, useMemo, useEffect } from 'react';
 import { 
   Package, Search, AlertTriangle, TrendingDown, Grid, List, Plus, Minus, 
   Download, RefreshCw, LogOut, Filter, ChevronDown, BarChart3, Boxes,
-  Warehouse, ArrowUpRight, ArrowDownRight, MoreHorizontal, X
+  Warehouse, ArrowDownRight
 } from 'lucide-react';
 import { StockChart } from './components/StockChart';
 import { Auth } from './components/Auth';
