@@ -1,6 +1,5 @@
 import { useState, useMemo, useEffect } from 'react';
-import { Package, Search, AlertTriangle, TrendingDown, Grid, List, Plus, Minus, Download, RefreshCw, LogOut, User } from 'lucide-react';
-import { useProducts } from './hooks/useProducts';
+import { Package, Search, AlertTriangle, TrendingDown, Grid, List, Plus, Minus, Download, RefreshCw, LogOut } from 'lucide-react';
 import { StockChart } from './components/StockChart';
 import { Auth } from './components/Auth';
 import { supabase } from './lib/supabase';
@@ -16,7 +15,6 @@ function App() {
   const [updating, setUpdating] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
-  // Check auth session on mount
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
       setSession(session);
@@ -29,7 +27,6 @@ function App() {
     return () => subscription.unsubscribe();
   }, []);
 
-  // Fetch products
   useEffect(() => {
     fetchProducts();
   }, []);
@@ -56,7 +53,6 @@ function App() {
     await supabase.auth.signOut();
   };
 
-  // If not logged in, show Auth component
   if (!session) {
     return <Auth onAuthSuccess={() => fetchProducts()} />;
   }
@@ -135,7 +131,6 @@ function App() {
 
   return (
     <div className="min-h-screen bg-gray-50">
-      {/* Header */}
       <header className="bg-white shadow-sm border-b">
         <div className="max-w-7xl mx-auto px-4 py-4">
           <div className="flex items-center justify-between">
@@ -176,7 +171,6 @@ function App() {
       </header>
 
       <main className="max-w-7xl mx-auto px-4 py-6">
-        {/* Stats Cards */}
         <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
           <div className="bg-white p-4 rounded-lg shadow-sm border">
             <div className="flex items-center justify-between">
@@ -219,13 +213,11 @@ function App() {
           </div>
         </div>
 
-        {/* Only Stock Chart - Pie Chart Removed */}
         <div className="bg-white p-4 rounded-lg shadow-sm border mb-6">
           <h3 className="text-lg font-semibold mb-4">Low Stock Alert</h3>
           <StockChart products={products.filter(p => p.in_stock <= (p.min_stock || 0))} />
         </div>
 
-        {/* Filters */}
         <div className="bg-white p-4 rounded-lg shadow-sm border mb-6">
           <div className="flex flex-col md:flex-row gap-4 items-center justify-between">
             <div className="relative flex-1 w-full">
@@ -278,7 +270,6 @@ function App() {
           </div>
         </div>
 
-        {/* Products Grid/List */}
         <div className={viewMode === 'grid' ? 'grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4' : 'space-y-2'}>
           {filteredProducts.map(product => (
             <div
