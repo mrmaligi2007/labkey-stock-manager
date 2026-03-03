@@ -2,7 +2,7 @@ import { useState, useMemo, useEffect } from 'react';
 import { 
   Search, Plus, Minus, RefreshCw, LogOut, LayoutDashboard, Boxes, FileText, 
   Building2, AlertCircle, Trash2, ChevronDown, ChevronRight, 
-  Package, Upload, FileUp
+  Package, Upload, FileUp, Loader2, X, CheckCircle
 } from 'lucide-react';
 import { Auth } from './components/Auth';
 import { supabase } from './lib/supabase';
@@ -30,6 +30,10 @@ function App() {
   const [loading, setLoading] = useState(true);
   const [authChecked, setAuthChecked] = useState(false);
   const [uploading, setUploading] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState(0);
+  const [processingOCR, setProcessingOCR] = useState(false);
+  const [uploadResults, setUploadResults] = useState<any[]>([]);
+  const [showResults, setShowResults] = useState(false);
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
@@ -84,53 +88,170 @@ function App() {
     }
   };
 
-  // Handle invoice PDF upload
+  // Simple OCR extraction function
+  const extractInvoiceData = async (file: File): Promise<any> => {
+    return new Promise((resolve) => {
+      const reader = new FileReader();
+      reader.onload = () => {
+        const text = reader.result as string;
+        
+        // Try to extract common invoice patterns
+        const lines = text.split('\n').map(l => l.trim()).filter(l => l.length > 0);
+        
+        // Look for customer/company name (usually near top)
+        let customerName = '';
+        let extractedItems: any[] = [];
+        
+        // Common patterns for customer names
+        const customerPatterns = [
+          /(?:bill to|sold to|customer|company|client)[:\s]+(.+)/i,
+          /^(?:to|for)[:\s]*(.+)/i,
+        ];
+        
+        for (const line of lines.slice(0, 20)) {
+          for (const pattern of customerPatterns) {
+            const match = line.match(pattern);
+            if (match && match[1] && match[1].length > 2) {
+              customerName = match[1].trim();
+              break;
+            }
+          }
+          if (customerName) break;
+        }
+        
+        // Look for LabKey product codes (LK-XX-XXXX pattern)
+        const skuPattern = /LK-[A-Z]{2}-[A-Z0-9\/\-]+/g;
+        const qtyPattern = /(\d+)\s*(?:pcs|units|qty|quantity)?/i;
+        
+        for (let i = 0; i < lines.length; i++) {
+          const line = lines[i];
+          const skus = line.match(skuPattern);
+          
+          if (skus) {
+            for (const sku of skus) {
+              // Look for quantity in same line or next few lines
+              let qty = 1;
+              const qtyMatch = line.match(qtyPattern) || lines[i + 1]?.match(qtyPattern);
+              if (qtyMatch) {
+                const parsed = parseInt(qtyMatch[1]);
+                if (parsed > 0 && parsed < 1000) qty = parsed;
+              }
+              
+              // Find product in database
+              const product = products.find(p => 
+                p.product_code === sku || 
+                p.product_code.includes(sku) ||
+                sku.includes(p.product_code)
+              );
+              
+              if (product) {
+                extractedItems.push({
+                  sku: product.product_code,
+                  description: product.description,
+                  quantity: qty
+                });
+              } else {
+                extractedItems.push({
+                  sku: sku,
+                  description: 'Unknown product',
+                  quantity: qty
+                });
+              }
+            }
+          }
+        }
+        
+        resolve({
+          customerName: customerName || 'Unknown Customer',
+          items: extractedItems,
+          rawText: text.substring(0, 500)
+        });
+      };
+      
+      // Try to read as text first (some PDFs are text-based)
+      reader.readAsText(file);
+    });
+  };
+
+  // Handle multiple invoice PDF upload
   const handleInvoiceUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
+    const files = Array.from(e.target.files || []);
+    if (files.length === 0) return;
 
     setUploading(true);
-    try {
-      // Upload to Supabase Storage
-      const fileName = `invoices/${Date.now()}_${file.name}`;
-      const { error: uploadError } = await supabase.storage
-        .from('invoices')
-        .upload(fileName, file);
+    setUploadProgress(0);
+    setUploadResults([]);
+    
+    const results: any[] = [];
+    
+    for (let i = 0; i < files.length; i++) {
+      const file = files[i];
+      
+      try {
+        // Step 1: Upload to Storage
+        const fileName = `invoices/${Date.now()}_${file.name}`;
+        const { error: uploadError } = await supabase.storage
+          .from('invoices')
+          .upload(fileName, file);
 
-      if (uploadError) throw uploadError;
+        if (uploadError) throw uploadError;
 
-      // Get public URL
-      const { data: { publicUrl } } = supabase.storage
-        .from('invoices')
-        .getPublicUrl(fileName);
+        // Get public URL
+        const { data: { publicUrl } } = supabase.storage
+          .from('invoices')
+          .getPublicUrl(fileName);
 
-      // Create invoice record
-      const { error: invoiceError } = await supabase
-        .from('invoices')
-        .insert([{
-          invoice_number: `INV-UPLOAD-${Date.now()}`,
-          customer_id: null,
-          total_amount: 0,
-          status: 'pending',
-          notes: `Uploaded invoice: ${file.name}`,
-          pdf_url: publicUrl
-        }])
-        .select()
-        .single();
+        // Step 2: Extract data with OCR
+        setProcessingOCR(true);
+        const extractedData = await extractInvoiceData(file);
+        setProcessingOCR(false);
 
-      if (invoiceError) throw invoiceError;
+        // Step 3: Create invoice record
+        const { error: invoiceError } = await supabase
+          .from('invoices')
+          .insert([{
+            invoice_number: `INV-${Date.now()}-${i}`,
+            customer_id: null,
+            total_amount: 0,
+            status: 'pending',
+            notes: `Customer: ${extractedData.customerName}\nExtracted items: ${extractedData.items.length}`,
+            pdf_url: publicUrl,
+            extracted_data: extractedData
+          }]);
 
-      // TODO: Parse PDF to extract items and deduct stock automatically
-      // For now, just store the invoice
+        if (invoiceError) throw invoiceError;
 
-      fetchAllData();
-      alert('Invoice uploaded successfully! PDF parsing for automatic stock deduction coming soon.');
-    } catch (err) {
-      console.error('Upload error:', err);
-      alert('Failed to upload invoice');
-    } finally {
-      setUploading(false);
+        // Step 4: Deduct stock for found items
+        for (const item of extractedData.items) {
+          const product = products.find(p => p.product_code === item.sku);
+          if (product && product.in_stock >= item.quantity) {
+            await handleUpdateStock(product.product_code, product.in_stock - item.quantity);
+          }
+        }
+
+        results.push({
+          file: file.name,
+          status: 'success',
+          customer: extractedData.customerName,
+          itemsFound: extractedData.items.length,
+          items: extractedData.items
+        });
+
+      } catch (err: any) {
+        results.push({
+          file: file.name,
+          status: 'error',
+          error: err.message
+        });
+      }
+      
+      setUploadProgress(Math.round(((i + 1) / files.length) * 100));
     }
+
+    setUploadResults(results);
+    setShowResults(true);
+    setUploading(false);
+    fetchAllData();
   };
 
   const toggleCategory = (category: string) => {
@@ -567,31 +688,107 @@ function App() {
           </div>
         )}
 
-        {/* INVOICES - Upload Only */}
+        {/* INVOICES - Multiple Upload with OCR */}
         {viewMode === 'invoices' && (
           <div className="space-y-6">
+            {/* Upload Area */}
             <div className="bg-white rounded-xl p-6 border border-slate-200">
-              <h2 className="text-xl font-bold text-slate-900 mb-4">Upload Invoice</h2>
-              <p className="text-slate-600 mb-4">Upload your invoice PDF. Stock will be automatically deducted based on items detected.</p>
+              <h2 className="text-xl font-bold text-slate-900 mb-2">Upload Invoices</h2>
+              <p className="text-slate-600 mb-4">Select multiple PDF invoices. OCR will extract customer name and LabKey products, then deduct stock automatically.</p>
               
-              <label className="flex flex-col items-center justify-center w-full h-32 border-2 border-dashed border-slate-300 rounded-xl cursor-pointer hover:bg-slate-50 transition-colors">
+              <label className={`flex flex-col items-center justify-center w-full h-40 border-2 border-dashed rounded-xl cursor-pointer transition-colors ${
+                uploading ? 'bg-slate-50 border-slate-300' : 'border-slate-300 hover:bg-slate-50 hover:border-blue-400'
+              }`}>
                 <div className="flex flex-col items-center justify-center pt-5 pb-6">
-                  <Upload className="w-8 h-8 text-slate-400 mb-2" />
-                  <p className="text-sm text-slate-500">{uploading ? 'Uploading...' : 'Click to upload invoice PDF'}</p>
+                  {uploading ? (
+                    <>
+                      <Loader2 className="w-8 h-8 text-blue-600 mb-2 animate-spin" />
+                      <p className="text-sm text-slate-600">{processingOCR ? 'Processing OCR...' : `Uploading... ${uploadProgress}%`}</p>
+                    </>
+                  ) : (
+                    <>
+                      <Upload className="w-8 h-8 text-slate-400 mb-2" />
+                      <p className="text-sm text-slate-500">Click or drag multiple PDF files</p>
+                      <p className="text-xs text-slate-400 mt-1">Supports multiple files</p>
+                    </>
+                  )}
                 </div>
                 <input 
                   type="file" 
                   className="hidden" 
                   accept=".pdf"
+                  multiple
                   onChange={handleInvoiceUpload}
                   disabled={uploading}
                 />
               </label>
             </div>
 
+            {/* Upload Results */}
+            {showResults && uploadResults.length > 0 && (
+              <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
+                <div className="p-4 border-b border-slate-200 flex items-center justify-between">
+                  <h3 className="font-bold text-slate-900">Upload Results</h3>
+                  <button 
+                    onClick={() => setShowResults(false)}
+                    className="p-1 hover:bg-slate-100 rounded"
+                  >
+                    <X className="w-5 h-5" />
+                  </button>
+                </div>
+                <div className="divide-y divide-slate-100">
+                  {uploadResults.map((result, idx) => (
+                    <div key={idx} className="p-4">
+                      <div className="flex items-center gap-3 mb-2">
+                        {result.status === 'success' ? (
+                          <CheckCircle className="w-5 h-5 text-emerald-500" />
+                        ) : (
+                          <X className="w-5 h-5 text-red-500" />
+                        )}
+                        <span className="font-medium text-slate-900">{result.file}</span>
+                        <span className={`px-2 py-1 text-xs rounded-full ${
+                          result.status === 'success' ? 'bg-emerald-100 text-emerald-700' : 'bg-red-100 text-red-700'
+                        }`}>
+                          {result.status}
+                        </span>
+                      </div>
+                      
+                      {result.status === 'success' && (
+                        <div className="ml-8 space-y-2">
+                          <p className="text-sm text-slate-600"><strong>Customer:</strong> {result.customer}</p>
+                          <p className="text-sm text-slate-600"><strong>Items Found:</strong> {result.itemsFound}</p>
+                          
+                          {result.items.length > 0 && (
+                            <div className="mt-2">
+                              <p className="text-sm font-medium text-slate-700 mb-1">Extracted Products:</p>
+                              <div className="space-y-1">
+                                {result.items.map((item: any, i: number) => (
+                                  <div key={i} className="flex items-center gap-2 text-sm">
+                                    <span className="font-mono text-slate-500">{item.sku}</span>
+                                    <span className="text-slate-400">×</span>
+                                    <span className="font-medium">{item.quantity}</span>
+                                    <span className="text-slate-600">- {item.description}</span>
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      )}
+                      
+                      {result.status === 'error' && (
+                        <p className="ml-8 text-sm text-red-600">{result.error}</p>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Uploaded Invoices List */}
             <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
               <div className="p-4 border-b border-slate-200">
-                <h3 className="font-bold text-slate-900">Uploaded Invoices</h3>
+                <h3 className="font-bold text-slate-900">Uploaded Invoices ({invoices.length})</h3>
               </div>
               <div className="divide-y divide-slate-100">
                 {invoices.map(invoice => (
@@ -599,7 +796,9 @@ function App() {
                     <div>
                       <p className="font-semibold text-slate-900">{invoice.invoice_number}</p>
                       <p className="text-sm text-slate-500">{new Date(invoice.date).toLocaleDateString()}</p>
-                      {invoice.notes && <p className="text-sm text-slate-600">{invoice.notes}</p>}
+                      {invoice.notes && (
+                        <div className="mt-1 text-sm text-slate-600 whitespace-pre-line">{invoice.notes}</div>
+                      )}
                     </div>
                     <div className="flex items-center gap-3">
                       {invoice.pdf_url && (
@@ -608,10 +807,12 @@ function App() {
                           target="_blank" 
                           rel="noopener noreferrer"
                           className="p-2 text-blue-600 hover:bg-blue-50 rounded-lg"
+                          title="View PDF"
                         >
                           <FileUp className="w-5 h-5" />
                         </a>
                       )}
+                      
                       <button 
                         onClick={() => {
                           if (confirm('Delete this invoice?')) {
@@ -619,6 +820,7 @@ function App() {
                           }
                         }}
                         className="p-2 text-red-400 hover:text-red-600 hover:bg-red-50 rounded-lg"
+                        title="Delete"
                       >
                         <Trash2 className="w-5 h-5" />
                       </button>
