@@ -1,0 +1,99 @@
+-- Create products table for LabKey Stock Manager
+CREATE TABLE IF NOT EXISTS products (
+  id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+  product_code TEXT UNIQUE NOT NULL,
+  description TEXT NOT NULL,
+  in_stock INTEGER DEFAULT 0,
+  category TEXT NOT NULL,
+  rele_count INTEGER DEFAULT 0,
+  min_stock INTEGER DEFAULT 0,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- Enable Row Level Security
+ALTER TABLE products ENABLE ROW LEVEL SECURITY;
+
+-- Create policy to allow all operations (for public access)
+CREATE POLICY "Allow all operations" ON products
+  FOR ALL USING (true) WITH CHECK (true);
+
+-- Insert initial LabKey products
+INSERT INTO products (product_code, description, in_stock, category, rele_count, min_stock) VALUES
+('LK-BS-CU2', 'LABKEY BASIC WITH 2 RELE', 8, 'BASIC', 2, 5),
+('LK-BS-CU4', 'LABKEY BASIC WITH 4 RELE', 5, 'BASIC', 4, 5),
+('LK-BS-CU2-R', 'LABKEY BASIC WITH 2 RELE and Radio module', 4, 'BASIC RADIO', 2, 3),
+('LK-BS-CU4-R', 'LABKEY BASIC WITH 4 RELE and Radio module', 0, 'BASIC RADIO', 4, 3),
+('LK-BS/REM-CU2', 'LABKEY BASIC REMOTE WITH 2 RELE', 1, 'BASIC REMOTE', 2, 2),
+('LK-BS/REM-CU4', 'LABKEY BASIC REMOTE WITH 4 RELE', 0, 'BASIC REMOTE', 4, 2),
+('LK-PR-CU2', 'LABKEY PRO WITH 2 RELE', 0, 'PRO', 2, 3),
+('LK-PR-CU4', 'LABKEY PRO WITH 4 RELE', 2, 'PRO', 4, 3),
+('LK-PR-CU2-R', 'LABKEY PRO WITH 2 RELE and Radio module', 2, 'PRO RADIO', 2, 2),
+('LK-PR-CU4-R', 'LABKEY PRO WITH 4 RELE and Radio module', 0, 'PRO RADIO', 4, 2),
+('LK-PR/REM-CU2', 'LABKEY PRO REMOTE WITH 2 RELE', 0, 'PRO REMOTE', 2, 2),
+('LK-PR/REM-CU4', 'LABKEY PRO REMOTE WITH 4 RELE', 0, 'PRO REMOTE', 4, 2),
+('LK-LT-CU2', 'LABKEY LTE WITH 2 RELE', 4, 'LTE', 2, 3),
+('LK-LT-CU4', 'LABKEY LTE WITH 4 RELE', 1, 'LTE', 4, 3),
+('LK-LT-CU2-R', 'LABKEY LTE WITH 2 RELE and Radio module', 0, 'LTE RADIO', 2, 2),
+('LK-LT-CU4-R', 'LABKEY LTE WITH 4 RELE and Radio module', 0, 'LTE RADIO', 4, 2),
+('LK-LT/RM-CU2', 'LABKEY LTE REMOTE WITH 2 RELE', 0, 'LTE REMOTE', 2, 2),
+('LK-LT/RM-CU4', 'LABKEY LTE REMOTE WITH 4 RELE', 0, 'LTE REMOTE', 4, 2),
+('LK-ST-CU2', 'LABKEY STAND ALONE WITH 2 RELE', 2, 'STAND ALONE', 2, 2),
+('LK-ST-CU4', 'LABKEY STAND ALONE WITH 4 RELE', 0, 'STAND ALONE', 4, 2),
+('LK-ST/ETH-CU4', 'LABKEY STAND ALONE WITH 4 RELE ETHERNET', 0, 'STAND ALONE', 4, 2),
+('LK-ST-CU2-R', 'LABKEY STAND ALONE WITH 2 RELE and Radio module', 0, 'STAND ALONE RADIO', 2, 2),
+('LK-ST-CU4-R', 'LABKEY STAND ALONE WITH 4 RELE and Radio module', 0, 'STAND ALONE RADIO', 4, 2),
+('LK-NX-T', 'LABKEY NEXT KEYPAD', 4, 'NEXT', 0, 5),
+('LK-NX-N', 'LABKEY NEXT NFC', 8, 'NEXT', 0, 5),
+('LK-NX-TN', 'LABKEY NEXT KEYPAD + NFC', 3, 'NEXT', 0, 5),
+('LK-NX-Q', 'LABKEY NEXT QR CODE', 9, 'NEXT', 0, 5),
+('LK-NX-TS', 'LABKEY NEXT POCKET', 0, 'NEXT', 0, 3),
+('LK-MI-T', 'LABKEY MINI KEYPAD', 2, 'MINI', 0, 3),
+('LK-MI-TN', 'LABKEY MINI KEYPAD + NFC', 3, 'MINI', 0, 3),
+('LK-MI-TQ', 'LABKEY MINI KEYPAD + QR CODE', 5, 'MINI', 0, 3),
+('LK-MI-TQN', 'LABKEY MINI KEYPAD + QR CODE + NFC', 9, 'MINI', 0, 3),
+('LK-MI-R', 'LABKEY MINI RADIO KEYPAD', 3, 'MINI', 0, 3),
+('LK-GL-T', 'LABKEY GLASS TASTIERINO', 0, 'GLASS', 0, 3),
+('LK-GL-N', 'LABKEY GLASS NFC', 5, 'GLASS', 0, 3),
+('LK-GL-TN', 'LABKEY GLASS TASTIERINO + NFC', 5, 'GLASS', 0, 3),
+('LK-GL-TQ', 'LABKEY GLASS TASTIERINO + QR CODE', 1, 'GLASS', 0, 3),
+('LK-GL-NQ', 'LABKEY GLASS NFC + QR CODE', 5, 'GLASS', 0, 3),
+('LK-GL-TQN', 'LABKEY GLASS KEYPAD + QR CODE + NFC', 8, 'GLASS', 0, 3),
+('LK-GL-TQN-503', 'LABKEY GLASS 503', 1, 'GLASS', 0, 2),
+('LK-EX-TA', 'LABKEY EXTREME VANDALPROOF KEYPAD', 0, 'EXTREME', 0, 2),
+('LK-EX-QI', 'LABKEY EXTREME RECESSED QR CODE', 0, 'EXTREME', 0, 2),
+('LK-EX-TAC', 'LABKEY EXTREME RECESSED VANDALPROOF KEYPAD WITH CARBON BOX', 0, 'EXTREME', 0, 2),
+('LK-CC-CU2', 'LABKEY CREDIT CARD CONTROL UNIT', 0, 'CREDIT CARD', 2, 2),
+('LK-CC-TN', 'LABKEY CREDIT CARD COMMAND DEVICE', 0, 'CREDIT CARD', 0, 2),
+('LK-ACC-PS/NX', 'NEXT protective shield', 10, 'ACCESSORY', 0, 5),
+('LK-ACC-PS/MIGL-', 'MINI / GLASS Protective Shield', 4, 'ACCESSORY', 0, 5),
+('LK-PR-CU4-ACC/CU4', 'Additional 4-relay plugin with LK-PR-CU4', 2, 'PRO', 8, 3),
+('LK-ACC/INPUT', '4 GPIO Input Management Plugin', 0, 'ACCESSORY', 0, 3),
+('LK-ALIM/DIN', 'DIN Power Supply', 0, 'ACCESSORY', 0, 3),
+('LK-ACC-AS/MI-GL', 'MINI / GLASS Control Protective Enclosure', 0, 'ACCESSORY', 0, 3),
+('LK-ACC/LETT-NFC', 'Desktop NFC Reader', 7, 'ACCESSORY', 0, 5),
+('LK-GN-TS', 'STANDARD NEUTRAL CARD', 0, 'MEDIA', 0, 50),
+('LK-GN-TSO', 'STANDARD CARD LABKEY LOGO', 201, 'MEDIA', 0, 100),
+('LK-GN-TS1', 'PERSONALIZED SINGLE-SIDED CARD', 0, 'MEDIA', 0, 20),
+('LK-GN-TS2', 'PERSONALIZED DOUBLE-SIDED CARD', 0, 'MEDIA', 0, 20),
+('LK-GNGP-', 'NEUTRAL KEYCHAIN TOKEN (without logo)', 0, 'MEDIA', 0, 50),
+('LK-GN-GP2', 'KEYCHAIN TOKENS', 269, 'MEDIA', 0, 100),
+('LK-GN-SK', 'NFC STICKERS WITH CUSTOM PRINT', 0, 'MEDIA', 0, 30),
+('LK-GN-BF/LK', 'SILICONE FITNESS BRACELET WITH LABKEY LOGO', 0, 'MEDIA', 0, 20),
+('LK-GN-BF1', 'SILICONE FITNESS BRACELET', 0, 'MEDIA', 0, 20)
+ON CONFLICT (product_code) DO NOTHING;
+
+-- Create function to update updated_at timestamp
+CREATE OR REPLACE FUNCTION update_updated_at_column()
+RETURNS TRIGGER AS $$
+BEGIN
+  NEW.updated_at = NOW();
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+-- Create trigger to auto-update updated_at
+DROP TRIGGER IF EXISTS update_products_updated_at ON products;
+CREATE TRIGGER update_products_updated_at
+  BEFORE UPDATE ON products
+  FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
