@@ -16,6 +16,7 @@ function App() {
   const [loading, setLoading] = useState(true);
   const [authChecked, setAuthChecked] = useState(false);
 
+  // All hooks must be called before any early returns
   // Check auth session on mount
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
@@ -69,24 +70,9 @@ function App() {
     setProducts([]);
   };
 
-  // Show loading while checking auth
-  if (!authChecked) {
-    return (
-      <div className="min-h-screen bg-gray-50 flex items-center justify-center">
-        <div className="text-center">
-          <RefreshCw className="w-8 h-8 animate-spin text-blue-600 mx-auto mb-4" />
-          <p className="text-gray-600">Loading...</p>
-        </div>
-      </div>
-    );
-  }
-
-  // Show auth page if not logged in
-  if (!session) {
-    return <Auth onAuthSuccess={() => fetchProducts()} />;
-  }
-
+  // Calculate all memoized values - these must be called before any returns
   const filteredProducts = useMemo(() => {
+    if (!products.length) return [];
     return products.filter(product => {
       const matchesSearch = product.description.toLowerCase().includes(searchTerm.toLowerCase()) ||
                           product.product_code.toLowerCase().includes(searchTerm.toLowerCase());
@@ -97,6 +83,7 @@ function App() {
   }, [products, searchTerm, selectedCategory, showLowStockOnly]);
 
   const categories = useMemo(() => {
+    if (!products.length) return ['All'];
     return ['All', ...new Set(products.map(p => p.category))];
   }, [products]);
 
@@ -106,6 +93,10 @@ function App() {
     const lowStock = products.filter(p => p.in_stock <= (p.min_stock || 0)).length;
     const outOfStock = products.filter(p => p.in_stock === 0).length;
     return { totalProducts, totalStock, lowStock, outOfStock };
+  }, [products]);
+
+  const lowStockProducts = useMemo(() => {
+    return products.filter(p => p.in_stock <= (p.min_stock || 0));
   }, [products]);
 
   const handleUpdateStock = async (productCode: string, delta: number) => {
@@ -147,6 +138,25 @@ function App() {
     a.click();
   };
 
+  // Now we can do conditional rendering after all hooks are called
+  // Show loading while checking auth
+  if (!authChecked) {
+    return (
+      <div className="min-h-screen bg-gray-50 flex items-center justify-center">
+        <div className="text-center">
+          <RefreshCw className="w-8 h-8 animate-spin text-blue-600 mx-auto mb-4" />
+          <p className="text-gray-600">Loading...</p>
+        </div>
+      </div>
+    );
+  }
+
+  // Show auth page if not logged in
+  if (!session) {
+    return <Auth onAuthSuccess={() => fetchProducts()} />;
+  }
+
+  // Show loading while fetching products
   if (loading) {
     return (
       <div className="min-h-screen bg-gray-50 flex items-center justify-center">
@@ -158,6 +168,7 @@ function App() {
     );
   }
 
+  // Main app UI
   return (
     <div className="min-h-screen bg-gray-50">
       <header className="bg-white shadow-sm border-b">
@@ -244,7 +255,7 @@ function App() {
 
         <div className="bg-white p-4 rounded-lg shadow-sm border mb-6">
           <h3 className="text-lg font-semibold mb-4">Low Stock Alert</h3>
-          <StockChart products={products.filter(p => p.in_stock <= (p.min_stock || 0))} />
+          <StockChart products={lowStockProducts} />
         </div>
 
         <div className="bg-white p-4 rounded-lg shadow-sm border mb-6">
