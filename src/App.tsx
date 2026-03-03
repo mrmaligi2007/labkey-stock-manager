@@ -100,7 +100,7 @@ function App() {
         reader.readAsDataURL(file);
       });
 
-      const model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash-exp' });
+      const model = genAI.getGenerativeModel({ model: 'gemini-3-flash-preview' });
 
       const prompt = `Extract the following information from this invoice PDF and return as JSON:
 {
@@ -488,7 +488,7 @@ Important:
                 <Sparkles className="w-6 h-6 text-purple-600" />
                 <div>
                   <h2 className="text-xl font-bold text-slate-900">AI Invoice Processing</h2>
-                  <p className="text-sm text-slate-500">Powered by Google Gemini 2.0 Flash</p>
+                  <p className="text-sm text-slate-500">Powered by Google Gemini 3 Flash Preview</p>
                 </div>
               </div>
               
