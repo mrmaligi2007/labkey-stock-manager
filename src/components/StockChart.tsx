@@ -1,5 +1,13 @@
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
-import { Product } from '../data/products';
+
+interface Product {
+  product_code: string
+  description: string
+  in_stock: number
+  category: string
+  rele_count: number
+  min_stock: number
+}
 
 interface Props {
   products: Product[];
@@ -7,9 +15,9 @@ interface Props {
 
 export function StockChart({ products }: Props) {
   const data = products.slice(0, 10).map(p => ({
-    name: p.productCode.split('-').pop() || p.productCode,
-    current: p.inStock,
-    minimum: p.minStock || 0,
+    name: p.product_code.split('-').pop() || p.product_code,
+    current: p.in_stock,
+    minimum: p.min_stock,
     category: p.category
   }));
 
