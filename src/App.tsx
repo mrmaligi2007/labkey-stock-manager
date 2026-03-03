@@ -2,16 +2,18 @@ import { useState, useMemo, useEffect } from 'react';
 import { 
   Search, Plus, Minus, RefreshCw, LogOut, LayoutDashboard, Boxes, FileText, 
   Building2, AlertCircle, Trash2, ChevronDown, ChevronRight, 
-  Package, Upload, FileUp, Loader2, X, CheckCircle
+  Package, Upload, FileUp, Loader2, X, CheckCircle, Sparkles
 } from 'lucide-react';
+import { GoogleGenerativeAI } from '@google/generative-ai';
 import { Auth } from './components/Auth';
 import { supabase } from './lib/supabase';
 import { initialProducts } from './data/products';
 import { PRODUCT_LINES, getProductLine, isControlUnit, isReader, isMedia } from './lib/labkey-systems';
 
+const genAI = new GoogleGenerativeAI(import.meta.env.VITE_GEMINI_API_KEY || '');
+
 type ViewMode = 'dashboard' | 'inventory' | 'invoices';
 
-// Helper to determine media subcategory
 function getMediaSubcategory(sku: string): string {
   if (sku.includes('TS') || sku.includes('TSO') || sku.includes('TS1') || sku.includes('TS2')) return 'CARDS';
   if (sku.includes('GP') || sku.includes('GNGP')) return 'KEYCHAINS';
@@ -31,7 +33,7 @@ function App() {
   const [authChecked, setAuthChecked] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
-  const [processingOCR, setProcessingOCR] = useState(false);
+  const [processingAI, setProcessingAI] = useState(false);
   const [uploadResults, setUploadResults] = useState<any[]>([]);
   const [showResults, setShowResults] = useState(false);
 
@@ -62,7 +64,6 @@ function App() {
         supabase.from('products').select('*').order('product_code'),
         supabase.from('invoices').select('*').order('date', { ascending: false })
       ]);
-
       setProducts(productsData || initialProducts);
       setInvoices(invoicesData || []);
     } catch (err) {
@@ -88,92 +89,86 @@ function App() {
     }
   };
 
-  // Simple OCR extraction function
-  const extractInvoiceData = async (file: File): Promise<any> => {
-    return new Promise((resolve) => {
-      const reader = new FileReader();
-      reader.onload = () => {
-        const text = reader.result as string;
-        
-        // Try to extract common invoice patterns
-        const lines = text.split('\n').map(l => l.trim()).filter(l => l.length > 0);
-        
-        // Look for customer/company name (usually near top)
-        let customerName = '';
-        let extractedItems: any[] = [];
-        
-        // Common patterns for customer names
-        const customerPatterns = [
-          /(?:bill to|sold to|customer|company|client)[:\s]+(.+)/i,
-          /^(?:to|for)[:\s]*(.+)/i,
-        ];
-        
-        for (const line of lines.slice(0, 20)) {
-          for (const pattern of customerPatterns) {
-            const match = line.match(pattern);
-            if (match && match[1] && match[1].length > 2) {
-              customerName = match[1].trim();
-              break;
-            }
-          }
-          if (customerName) break;
+  const extractInvoiceDataWithGemini = async (file: File): Promise<any> => {
+    try {
+      const base64Data = await new Promise<string>((resolve) => {
+        const reader = new FileReader();
+        reader.onloadend = () => {
+          const base64 = reader.result as string;
+          resolve(base64.split(',')[1]);
+        };
+        reader.readAsDataURL(file);
+      });
+
+      const model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash-exp' });
+
+      const prompt = `Extract the following information from this invoice PDF and return as JSON:
+{
+  "customer_name": "company or customer name",
+  "invoice_date": "date in YYYY-MM-DD format",
+  "invoice_number": "invoice number",
+  "items": [
+    {
+      "sku": "product code (look for LK-XX-XXXX format)",
+      "description": "product description",
+      "quantity": number,
+      "unit_price": number,
+      "total_price": number
+    }
+  ],
+  "subtotal": number,
+  "tax": number,
+  "total": number
+}
+Important:
+- Look for LabKey product codes starting with "LK-" (like LK-BS-CU2, LK-NX-TN, etc.)
+- Extract all line items with quantities and prices
+- If a field is not found, use null or 0
+- Return ONLY valid JSON, no markdown formatting`;
+
+      const result = await model.generateContent([
+        prompt,
+        { inlineData: { mimeType: 'application/pdf', data: base64Data } }
+      ]);
+
+      const response = await result.response;
+      const text = response.text();
+
+      let extractedData;
+      try {
+        const jsonMatch = text.match(/\{[\s\S]*\}/);
+        if (jsonMatch) {
+          extractedData = JSON.parse(jsonMatch[0]);
+        } else {
+          extractedData = JSON.parse(text);
         }
-        
-        // Look for LabKey product codes (LK-XX-XXXX pattern)
-        const skuPattern = /LK-[A-Z]{2}-[A-Z0-9\/\-]+/g;
-        const qtyPattern = /(\d+)\s*(?:pcs|units|qty|quantity)?/i;
-        
-        for (let i = 0; i < lines.length; i++) {
-          const line = lines[i];
-          const skus = line.match(skuPattern);
-          
-          if (skus) {
-            for (const sku of skus) {
-              // Look for quantity in same line or next few lines
-              let qty = 1;
-              const qtyMatch = line.match(qtyPattern) || lines[i + 1]?.match(qtyPattern);
-              if (qtyMatch) {
-                const parsed = parseInt(qtyMatch[1]);
-                if (parsed > 0 && parsed < 1000) qty = parsed;
-              }
-              
-              // Find product in database
-              const product = products.find(p => 
-                p.product_code === sku || 
-                p.product_code.includes(sku) ||
-                sku.includes(p.product_code)
-              );
-              
-              if (product) {
-                extractedItems.push({
-                  sku: product.product_code,
-                  description: product.description,
-                  quantity: qty
-                });
-              } else {
-                extractedItems.push({
-                  sku: sku,
-                  description: 'Unknown product',
-                  quantity: qty
-                });
-              }
-            }
-          }
-        }
-        
-        resolve({
-          customerName: customerName || 'Unknown Customer',
-          items: extractedItems,
-          rawText: text.substring(0, 500)
-        });
+      } catch (e) {
+        return {
+          customer_name: 'Unknown (Parse Error)',
+          invoice_date: new Date().toISOString().split('T')[0],
+          invoice_number: 'UNKNOWN',
+          items: [],
+          subtotal: 0,
+          tax: 0,
+          total: 0
+        };
+      }
+
+      return {
+        customer_name: extractedData.customer_name || 'Unknown Customer',
+        invoice_date: extractedData.invoice_date || new Date().toISOString().split('T')[0],
+        invoice_number: extractedData.invoice_number || 'UNKNOWN',
+        items: extractedData.items || [],
+        subtotal: extractedData.subtotal || 0,
+        tax: extractedData.tax || 0,
+        total: extractedData.total || 0
       };
-      
-      // Try to read as text first (some PDFs are text-based)
-      reader.readAsText(file);
-    });
+    } catch (error) {
+      console.error('Gemini extraction error:', error);
+      throw error;
+    }
   };
 
-  // Handle multiple invoice PDF upload
   const handleInvoiceUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(e.target.files || []);
     if (files.length === 0) return;
@@ -188,61 +183,54 @@ function App() {
       const file = files[i];
       
       try {
-        // Step 1: Upload to Storage
         const fileName = `invoices/${Date.now()}_${file.name}`;
-        const { error: uploadError } = await supabase.storage
-          .from('invoices')
-          .upload(fileName, file);
-
+        const { error: uploadError } = await supabase.storage.from('invoices').upload(fileName, file);
         if (uploadError) throw uploadError;
 
-        // Get public URL
-        const { data: { publicUrl } } = supabase.storage
-          .from('invoices')
-          .getPublicUrl(fileName);
+        const { data: { publicUrl } } = supabase.storage.from('invoices').getPublicUrl(fileName);
 
-        // Step 2: Extract data with OCR
-        setProcessingOCR(true);
-        const extractedData = await extractInvoiceData(file);
-        setProcessingOCR(false);
+        setProcessingAI(true);
+        const extractedData = await extractInvoiceDataWithGemini(file);
+        setProcessingAI(false);
 
-        // Step 3: Create invoice record
-        const { error: invoiceError } = await supabase
-          .from('invoices')
-          .insert([{
-            invoice_number: `INV-${Date.now()}-${i}`,
-            customer_id: null,
-            total_amount: 0,
-            status: 'pending',
-            notes: `Customer: ${extractedData.customerName}\nExtracted items: ${extractedData.items.length}`,
-            pdf_url: publicUrl,
-            extracted_data: extractedData
-          }]);
+        const { error: invoiceError } = await supabase.from('invoices').insert([{
+          invoice_number: extractedData.invoice_number || `INV-${Date.now()}-${i}`,
+          customer_id: null,
+          total_amount: extractedData.total || 0,
+          status: 'pending',
+          notes: `Customer: ${extractedData.customer_name}\nDate: ${extractedData.invoice_date}\nItems: ${extractedData.items.length}\nTotal: $${extractedData.total}`,
+          pdf_url: publicUrl,
+          extracted_data: extractedData
+        }]);
 
         if (invoiceError) throw invoiceError;
 
-        // Step 4: Deduct stock for found items
+        let stockUpdated = 0;
         for (const item of extractedData.items) {
-          const product = products.find(p => p.product_code === item.sku);
+          const product = products.find(p => 
+            p.product_code === item.sku || 
+            p.product_code.toLowerCase() === item.sku?.toLowerCase()
+          );
           if (product && product.in_stock >= item.quantity) {
             await handleUpdateStock(product.product_code, product.in_stock - item.quantity);
+            stockUpdated++;
           }
         }
 
         results.push({
           file: file.name,
           status: 'success',
-          customer: extractedData.customerName,
+          customer: extractedData.customer_name,
+          invoiceNumber: extractedData.invoice_number,
+          date: extractedData.invoice_date,
           itemsFound: extractedData.items.length,
-          items: extractedData.items
+          items: extractedData.items,
+          total: extractedData.total,
+          stockUpdated: stockUpdated
         });
 
       } catch (err: any) {
-        results.push({
-          file: file.name,
-          status: 'error',
-          error: err.message
-        });
+        results.push({ file: file.name, status: 'error', error: err.message });
       }
       
       setUploadProgress(Math.round(((i + 1) / files.length) * 100));
@@ -256,11 +244,8 @@ function App() {
 
   const toggleCategory = (category: string) => {
     const newExpanded = new Set(expandedCategories);
-    if (newExpanded.has(category)) {
-      newExpanded.delete(category);
-    } else {
-      newExpanded.add(category);
-    }
+    if (newExpanded.has(category)) newExpanded.delete(category);
+    else newExpanded.add(category);
     setExpandedCategories(newExpanded);
   };
 
@@ -282,35 +267,19 @@ function App() {
     };
   }, [products, invoices]);
 
-  // Organize products properly
   const organizedProducts = useMemo(() => {
     const filtered = searchTerm 
-      ? products.filter(p => 
-          p.product_code.toLowerCase().includes(searchTerm.toLowerCase()) ||
-          p.description.toLowerCase().includes(searchTerm.toLowerCase())
-        )
+      ? products.filter(p => p.product_code.toLowerCase().includes(searchTerm.toLowerCase()) || p.description.toLowerCase().includes(searchTerm.toLowerCase()))
       : products;
 
-    const organized: any = {
-      CONTROL_UNITS: {},
-      READERS: {},
-      MEDIA: {},
-      ACCESSORIES: {}
-    };
+    const organized: any = { CONTROL_UNITS: {}, READERS: {}, MEDIA: {}, ACCESSORIES: {} };
 
     filtered.forEach(product => {
       const line = getProductLine(product.product_code);
       if (line) {
         let subcategory = line.subcategory;
-        
-        // Fix media subcategories
-        if (line.line === 'MEDIA') {
-          subcategory = getMediaSubcategory(product.product_code);
-        }
-        
-        if (!organized[line.line][subcategory]) {
-          organized[line.line][subcategory] = [];
-        }
+        if (line.line === 'MEDIA') subcategory = getMediaSubcategory(product.product_code);
+        if (!organized[line.line][subcategory]) organized[line.line][subcategory] = [];
         organized[line.line][subcategory].push(product);
       }
     });
@@ -335,9 +304,7 @@ function App() {
     );
   }
 
-  if (!session) {
-    return <Auth onAuthSuccess={fetchAllData} />;
-  }
+  if (!session) return <Auth onAuthSuccess={fetchAllData} />;
 
   if (loading) {
     return (
@@ -356,9 +323,7 @@ function App() {
         <div className="max-w-7xl mx-auto px-4">
           <div className="flex items-center justify-between h-16">
             <div className="flex items-center gap-3">
-              <div className="bg-blue-600 p-2 rounded-lg">
-                <Building2 className="w-6 h-6 text-white" />
-              </div>
+              <div className="bg-blue-600 p-2 rounded-lg"><Building2 className="w-6 h-6 text-white" /></div>
               <div>
                 <h1 className="font-bold text-slate-900">LabKey Manager</h1>
                 <p className="text-xs text-slate-500">Stock Management</p>
@@ -366,9 +331,7 @@ function App() {
             </div>
             <div className="flex items-center gap-4">
               <span className="text-sm text-slate-600 hidden md:block">{session.user.email}</span>
-              <button onClick={handleSignOut} className="p-2 text-slate-400 hover:text-red-600">
-                <LogOut className="w-5 h-5" />
-              </button>
+              <button onClick={handleSignOut} className="p-2 text-slate-400 hover:text-red-600"><LogOut className="w-5 h-5" /></button>
             </div>
           </div>
         </div>
@@ -398,33 +361,27 @@ function App() {
       </nav>
 
       <main className="max-w-7xl mx-auto px-4 py-6">
-        {/* DASHBOARD */}
         {viewMode === 'dashboard' && (
-          <div className="space-y-6">
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-              {[
-                { label: 'Control Units', value: stats.controlUnits, icon: Building2, color: 'blue' },
-                { label: 'Readers', value: stats.readers, icon: Package, color: 'indigo' },
-                { label: 'Media Items', value: stats.media, icon: Boxes, color: 'teal' },
-                { label: 'Low Stock', value: stats.lowStock, icon: AlertCircle, color: 'red' },
-                { label: 'Total Invoices', value: stats.totalInvoices, icon: FileText, color: 'cyan' },
-                { label: 'Pending', value: stats.pendingInvoices, icon: FileText, color: 'orange' },
-              ].map((stat, idx) => (
-                <div key={idx} className="bg-white rounded-xl p-4 border border-slate-200">
-                  <div className="flex items-center gap-3 mb-2">
-                    <div className={`p-2 bg-${stat.color}-100 rounded-lg`}>
-                      <stat.icon className={`w-5 h-5 text-${stat.color}-600`} />
-                    </div>
-                    <span className="text-sm text-slate-500">{stat.label}</span>
-                  </div>
-                  <p className={`text-2xl font-bold text-${stat.color}-600`}>{stat.value}</p>
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+            {[
+              { label: 'Control Units', value: stats.controlUnits, icon: Building2, color: 'blue' },
+              { label: 'Readers', value: stats.readers, icon: Package, color: 'indigo' },
+              { label: 'Media Items', value: stats.media, icon: Boxes, color: 'teal' },
+              { label: 'Low Stock', value: stats.lowStock, icon: AlertCircle, color: 'red' },
+              { label: 'Total Invoices', value: stats.totalInvoices, icon: FileText, color: 'cyan' },
+              { label: 'Pending', value: stats.pendingInvoices, icon: FileText, color: 'orange' },
+            ].map((stat, idx) => (
+              <div key={idx} className="bg-white rounded-xl p-4 border border-slate-200">
+                <div className="flex items-center gap-3 mb-2">
+                  <div className={`p-2 bg-${stat.color}-100 rounded-lg`}><stat.icon className={`w-5 h-5 text-${stat.color}-600`} /></div>
+                  <span className="text-sm text-slate-500">{stat.label}</span>
                 </div>
-              ))}
-            </div>
+                <p className={`text-2xl font-bold text-${stat.color}-600`}>{stat.value}</p>
+              </div>
+            ))}
           </div>
         )}
 
-        {/* INVENTORY */}
         {viewMode === 'inventory' && (
           <div className="space-y-6">
             <div className="bg-white rounded-xl p-4 border border-slate-200">
@@ -441,386 +398,172 @@ function App() {
             </div>
 
             <div className="space-y-6">
-              {/* CONTROL UNITS */}
-              <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
-                <button 
-                  onClick={() => toggleCategory('CONTROL_UNITS')}
-                  className="w-full flex items-center justify-between p-4 bg-gradient-to-r from-blue-50 to-blue-100 border-b border-blue-200"
-                >
-                  <div className="flex items-center gap-3">
-                    <Building2 className="w-6 h-6 text-blue-600" />
-                    <div className="text-left">
-                      <h3 className="font-bold text-slate-900">Control Units</h3>
-                      <p className="text-sm text-slate-600">Central controllers for access management</p>
-                    </div>
-                  </div>
-                  {expandedCategories.has('CONTROL_UNITS') ? <ChevronDown className="w-5 h-5" /> : <ChevronRight className="w-5 h-5" />}
-                </button>
+              {['CONTROL_UNITS', 'READERS', 'MEDIA', 'ACCESSORIES'].map((category) => {
+                const line = PRODUCT_LINES[category as keyof typeof PRODUCT_LINES];
+                const colors: any = {
+                  CONTROL_UNITS: 'from-blue-50 to-blue-100 border-blue-200',
+                  READERS: 'from-indigo-50 to-indigo-100 border-indigo-200',
+                  MEDIA: 'from-teal-50 to-teal-100 border-teal-200',
+                  ACCESSORIES: 'from-slate-50 to-slate-100 border-slate-200'
+                };
+                const icons: any = {
+                  CONTROL_UNITS: Building2,
+                  READERS: Package,
+                  MEDIA: Boxes,
+                  ACCESSORIES: Package
+                };
+                const iconColors: any = {
+                  CONTROL_UNITS: 'text-blue-600',
+                  READERS: 'text-indigo-600',
+                  MEDIA: 'text-teal-600',
+                  ACCESSORIES: 'text-slate-600'
+                };
+                const Icon = icons[category];
                 
-                {expandedCategories.has('CONTROL_UNITS') && (
-                  <div className="p-4 space-y-4">
-                    {Object.entries(PRODUCT_LINES.CONTROL_UNITS.subcategories).map(([key, subcat]: [string, any]) => {
-                      const products = organizedProducts.CONTROL_UNITS[key] || [];
-                      if (products.length === 0) return null;
-                      return (
-                        <div key={key} className="border border-slate-200 rounded-lg overflow-hidden">
-                          <div className={`p-3 ${subcat.color} text-white`}>
-                            <h4 className="font-bold">{subcat.name}</h4>
-                            <p className="text-sm opacity-90">{subcat.description}</p>
-                          </div>
-                          <div className="divide-y divide-slate-100">
-                            {products.map((product: any) => {
-                              const status = getStockStatus(product.in_stock, product.min_stock || 0);
-                              return (
-                                <div key={product.product_code} className="p-3 flex items-center justify-between hover:bg-slate-50">
-                                  <div className="flex-1">
-                                    <p className="font-medium text-slate-900">{product.description}</p>
-                                    <p className="text-sm text-slate-500 font-mono">{product.product_code}</p>
-                                    <div className="flex gap-2 mt-1">
-                                      {subcat.features.slice(0, 3).map((feat: string) => (
-                                        <span key={feat} className="text-xs px-2 py-0.5 bg-slate-100 rounded">{feat}</span>
-                                      ))}
-                                    </div>
-                                  </div>
-                                  <div className="flex items-center gap-3">
-                                    <span className={`px-2 py-1 rounded-full text-xs font-medium ${status.bg} ${status.text}`}>
-                                      {status.label} ({product.in_stock})
-                                    </span>
-                                    <div className="flex gap-1">
-                                      <button onClick={() => handleUpdateStock(product.product_code, product.in_stock - 1)} className="w-8 h-8 flex items-center justify-center bg-slate-100 rounded hover:bg-red-100">
-                                        <Minus className="w-4 h-4" />
-                                      </button>
-                                      <button onClick={() => handleUpdateStock(product.product_code, product.in_stock + 1)} className="w-8 h-8 flex items-center justify-center bg-slate-100 rounded hover:bg-emerald-100">
-                                        <Plus className="w-4 h-4" />
-                                      </button>
-                                    </div>
-                                  </div>
-                                </div>
-                              );
-                            })}
-                          </div>
+                return (
+                  <div key={category} className="bg-white rounded-xl border border-slate-200 overflow-hidden">
+                    <button 
+                      onClick={() => toggleCategory(category)}
+                      className={`w-full flex items-center justify-between p-4 bg-gradient-to-r ${colors[category]}`}
+                    >
+                      <div className="flex items-center gap-3">
+                        <Icon className={`w-6 h-6 ${iconColors[category]}`} />
+                        <div className="text-left">
+                          <h3 className="font-bold text-slate-900">{line.name}</h3>
+                          <p className="text-sm text-slate-600">{line.description}</p>
                         </div>
-                      );
-                    })}
-                  </div>
-                )}
-              </div>
-
-              {/* READERS */}
-              <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
-                <button 
-                  onClick={() => toggleCategory('READERS')}
-                  className="w-full flex items-center justify-between p-4 bg-gradient-to-r from-indigo-50 to-indigo-100 border-b border-indigo-200"
-                >
-                  <div className="flex items-center gap-3">
-                    <Package className="w-6 h-6 text-indigo-600" />
-                    <div className="text-left">
-                      <h3 className="font-bold text-slate-900">Readers</h3>
-                      <p className="text-sm text-slate-600">Access control devices</p>
-                    </div>
-                  </div>
-                  {expandedCategories.has('READERS') ? <ChevronDown className="w-5 h-5" /> : <ChevronRight className="w-5 h-5" />}
-                </button>
-                
-                {expandedCategories.has('READERS') && (
-                  <div className="p-4 space-y-4">
-                    {Object.entries(PRODUCT_LINES.READERS.subcategories).map(([key, subcat]: [string, any]) => {
-                      const products = organizedProducts.READERS[key] || [];
-                      if (products.length === 0) return null;
-                      return (
-                        <div key={key} className="border border-slate-200 rounded-lg overflow-hidden">
-                          <div className={`p-3 ${subcat.color} text-white`}>
-                            <h4 className="font-bold">{subcat.name}</h4>
-                            <p className="text-sm opacity-90">{subcat.description}</p>
-                          </div>
-                          <div className="divide-y divide-slate-100">
-                            {products.map((product: any) => {
-                              const status = getStockStatus(product.in_stock, product.min_stock || 0);
-                              return (
-                                <div key={product.product_code} className="p-3 flex items-center justify-between hover:bg-slate-50">
-                                  <div className="flex-1">
-                                    <p className="font-medium text-slate-900">{product.description}</p>
-                                    <p className="text-sm text-slate-500 font-mono">{product.product_code}</p>
-                                  </div>
-                                  <div className="flex items-center gap-3">
-                                    <span className={`px-2 py-1 rounded-full text-xs font-medium ${status.bg} ${status.text}`}>
-                                      {status.label} ({product.in_stock})
-                                    </span>
-                                    <div className="flex gap-1">
-                                      <button onClick={() => handleUpdateStock(product.product_code, product.in_stock - 1)} className="w-8 h-8 flex items-center justify-center bg-slate-100 rounded hover:bg-red-100">
-                                        <Minus className="w-4 h-4" />
-                                      </button>
-                                      <button onClick={() => handleUpdateStock(product.product_code, product.in_stock + 1)} className="w-8 h-8 flex items-center justify-center bg-slate-100 rounded hover:bg-emerald-100">
-                                        <Plus className="w-4 h-4" />
-                                      </button>
+                      </div>
+                      {expandedCategories.has(category) ? <ChevronDown className="w-5 h-5" /> : <ChevronRight className="w-5 h-5" />}
+                    </button>
+                    
+                    {expandedCategories.has(category) && (
+                      <div className="p-4 space-y-4">
+                        {Object.entries(line.subcategories).map(([key, subcat]: [string, any]) => {
+                          const prods = organizedProducts[category][key] || [];
+                          if (prods.length === 0) return null;
+                          return (
+                            <div key={key} className="border border-slate-200 rounded-lg overflow-hidden">
+                              <div className={`p-3 ${subcat.color} text-white`}>
+                                <h4 className="font-bold">{subcat.name}</h4>
+                                <p className="text-sm opacity-90">{subcat.description}</p>
+                              </div>
+                              <div className="divide-y divide-slate-100">
+                                {prods.map((product: any) => {
+                                  const status = getStockStatus(product.in_stock, product.min_stock || 0);
+                                  return (
+                                    <div key={product.product_code} className="p-3 flex items-center justify-between hover:bg-slate-50">
+                                      <div className="flex-1">
+                                        <p className="font-medium text-slate-900">{product.description}</p>
+                                        <p className="text-sm text-slate-500 font-mono">{product.product_code}</p>
+                                      </div>
+                                      <div className="flex items-center gap-3">
+                                        <span className={`px-2 py-1 rounded-full text-xs font-medium ${status.bg} ${status.text}`}>
+                                          {status.label} ({product.in_stock})
+                                        </span>
+                                        <div className="flex gap-1">
+                                          <button onClick={() => handleUpdateStock(product.product_code, product.in_stock - 1)} className="w-8 h-8 flex items-center justify-center bg-slate-100 rounded hover:bg-red-100"><Minus className="w-4 h-4" /></button>
+                                          <button onClick={() => handleUpdateStock(product.product_code, product.in_stock + 1)} className="w-8 h-8 flex items-center justify-center bg-slate-100 rounded hover:bg-emerald-100"><Plus className="w-4 h-4" /></button>
+                                        </div>
+                                      </div>
                                     </div>
-                                  </div>
-                                </div>
-                              );
-                            })}
-                          </div>
-                        </div>
-                      );
-                    })}
+                                  );
+                                })}
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
                   </div>
-                )}
-              </div>
-
-              {/* MEDIA */}
-              <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
-                <button 
-                  onClick={() => toggleCategory('MEDIA')}
-                  className="w-full flex items-center justify-between p-4 bg-gradient-to-r from-teal-50 to-teal-100 border-b border-teal-200"
-                >
-                  <div className="flex items-center gap-3">
-                    <Boxes className="w-6 h-6 text-teal-600" />
-                    <div className="text-left">
-                      <h3 className="font-bold text-slate-900">Media</h3>
-                      <p className="text-sm text-slate-600">NFC cards, keychains, stickers, bracelets</p>
-                    </div>
-                  </div>
-                  {expandedCategories.has('MEDIA') ? <ChevronDown className="w-5 h-5" /> : <ChevronRight className="w-5 h-5" />}
-                </button>
-                
-                {expandedCategories.has('MEDIA') && (
-                  <div className="p-4 space-y-4">
-                    {Object.entries(PRODUCT_LINES.MEDIA.subcategories).map(([key, subcat]: [string, any]) => {
-                      const products = organizedProducts.MEDIA[key] || [];
-                      if (products.length === 0) return null;
-                      return (
-                        <div key={key} className="border border-slate-200 rounded-lg overflow-hidden">
-                          <div className={`p-3 ${subcat.color} text-white`}>
-                            <h4 className="font-bold">{subcat.name}</h4>
-                            <p className="text-sm opacity-90">{subcat.description}</p>
-                          </div>
-                          <div className="divide-y divide-slate-100">
-                            {products.map((product: any) => {
-                              const status = getStockStatus(product.in_stock, product.min_stock || 0);
-                              return (
-                                <div key={product.product_code} className="p-3 flex items-center justify-between hover:bg-slate-50">
-                                  <div className="flex-1">
-                                    <p className="font-medium text-slate-900">{product.description}</p>
-                                    <p className="text-sm text-slate-500 font-mono">{product.product_code}</p>
-                                  </div>
-                                  <div className="flex items-center gap-3">
-                                    <span className={`px-2 py-1 rounded-full text-xs font-medium ${status.bg} ${status.text}`}>
-                                      {status.label} ({product.in_stock})
-                                    </span>
-                                    <div className="flex gap-1">
-                                      <button onClick={() => handleUpdateStock(product.product_code, product.in_stock - 1)} className="w-8 h-8 flex items-center justify-center bg-slate-100 rounded hover:bg-red-100">
-                                        <Minus className="w-4 h-4" />
-                                      </button>
-                                      <button onClick={() => handleUpdateStock(product.product_code, product.in_stock + 1)} className="w-8 h-8 flex items-center justify-center bg-slate-100 rounded hover:bg-emerald-100">
-                                        <Plus className="w-4 h-4" />
-                                      </button>
-                                    </div>
-                                  </div>
-                                </div>
-                              );
-                            })}
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                )}
-              </div>
-
-              {/* ACCESSORIES */}
-              <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
-                <button 
-                  onClick={() => toggleCategory('ACCESSORIES')}
-                  className="w-full flex items-center justify-between p-4 bg-gradient-to-r from-slate-50 to-slate-100 border-b border-slate-200"
-                >
-                  <div className="flex items-center gap-3">
-                    <Package className="w-6 h-6 text-slate-600" />
-                    <div className="text-left">
-                      <h3 className="font-bold text-slate-900">Accessories</h3>
-                      <p className="text-sm text-slate-600">Additional components and add-ons</p>
-                    </div>
-                  </div>
-                  {expandedCategories.has('ACCESSORIES') ? <ChevronDown className="w-5 h-5" /> : <ChevronRight className="w-5 h-5" />}
-                </button>
-                
-                {expandedCategories.has('ACCESSORIES') && (
-                  <div className="p-4">
-                    {Object.entries(PRODUCT_LINES.ACCESSORIES.subcategories).map(([key, subcat]: [string, any]) => {
-                      const products = organizedProducts.ACCESSORIES[key] || [];
-                      if (products.length === 0) return null;
-                      return (
-                        <div key={key} className="border border-slate-200 rounded-lg overflow-hidden">
-                          <div className={`p-3 ${subcat.color} text-white`}>
-                            <h4 className="font-bold">{subcat.name}</h4>
-                          </div>
-                          <div className="divide-y divide-slate-100">
-                            {products.map((product: any) => {
-                              const status = getStockStatus(product.in_stock, product.min_stock || 0);
-                              return (
-                                <div key={product.product_code} className="p-3 flex items-center justify-between hover:bg-slate-50">
-                                  <div className="flex-1">
-                                    <p className="font-medium text-slate-900">{product.description}</p>
-                                    <p className="text-sm text-slate-500 font-mono">{product.product_code}</p>
-                                  </div>
-                                  <div className="flex items-center gap-3">
-                                    <span className={`px-2 py-1 rounded-full text-xs font-medium ${status.bg} ${status.text}`}>
-                                      {status.label} ({product.in_stock})
-                                    </span>
-                                    <div className="flex gap-1">
-                                      <button onClick={() => handleUpdateStock(product.product_code, product.in_stock - 1)} className="w-8 h-8 flex items-center justify-center bg-slate-100 rounded hover:bg-red-100">
-                                        <Minus className="w-4 h-4" />
-                                      </button>
-                                      <button onClick={() => handleUpdateStock(product.product_code, product.in_stock + 1)} className="w-8 h-8 flex items-center justify-center bg-slate-100 rounded hover:bg-emerald-100">
-                                        <Plus className="w-4 h-4" />
-                                      </button>
-                                    </div>
-                                  </div>
-                                </div>
-                              );
-                            })}
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                )}
-              </div>
+                );
+              })}
             </div>
           </div>
         )}
 
-        {/* INVOICES - Multiple Upload with OCR */}
         {viewMode === 'invoices' && (
           <div className="space-y-6">
-            {/* Upload Area */}
             <div className="bg-white rounded-xl p-6 border border-slate-200">
-              <h2 className="text-xl font-bold text-slate-900 mb-2">Upload Invoices</h2>
-              <p className="text-slate-600 mb-4">Select multiple PDF invoices. OCR will extract customer name and LabKey products, then deduct stock automatically.</p>
+              <div className="flex items-center gap-3 mb-4">
+                <Sparkles className="w-6 h-6 text-purple-600" />
+                <div>
+                  <h2 className="text-xl font-bold text-slate-900">AI Invoice Processing</h2>
+                  <p className="text-sm text-slate-500">Powered by Google Gemini 2.0 Flash</p>
+                </div>
+              </div>
+              
+              <p className="text-slate-600 mb-4">Upload multiple PDF invoices. Gemini AI will intelligently extract customer details, products, quantities, and prices.</p>
               
               <label className={`flex flex-col items-center justify-center w-full h-40 border-2 border-dashed rounded-xl cursor-pointer transition-colors ${
-                uploading ? 'bg-slate-50 border-slate-300' : 'border-slate-300 hover:bg-slate-50 hover:border-blue-400'
+                uploading ? 'bg-slate-50 border-slate-300' : 'border-slate-300 hover:bg-slate-50 hover:border-purple-400'
               }`}>
                 <div className="flex flex-col items-center justify-center pt-5 pb-6">
                   {uploading ? (
                     <>
-                      <Loader2 className="w-8 h-8 text-blue-600 mb-2 animate-spin" />
-                      <p className="text-sm text-slate-600">{processingOCR ? 'Processing OCR...' : `Uploading... ${uploadProgress}%`}</p>
+                      <Loader2 className="w-8 h-8 text-purple-600 mb-2 animate-spin" />
+                      <p className="text-sm text-slate-600">{processingAI ? '🤖 Gemini AI analyzing...' : `Uploading... ${uploadProgress}%`}</p>
                     </>
                   ) : (
                     <>
                       <Upload className="w-8 h-8 text-slate-400 mb-2" />
                       <p className="text-sm text-slate-500">Click or drag multiple PDF files</p>
-                      <p className="text-xs text-slate-400 mt-1">Supports multiple files</p>
+                      <p className="text-xs text-slate-400 mt-1">Gemini AI will extract all data</p>
                     </>
                   )}
                 </div>
-                <input 
-                  type="file" 
-                  className="hidden" 
-                  accept=".pdf"
-                  multiple
-                  onChange={handleInvoiceUpload}
-                  disabled={uploading}
-                />
+                <input type="file" className="hidden" accept=".pdf" multiple onChange={handleInvoiceUpload} disabled={uploading} />
               </label>
             </div>
 
-            {/* Upload Results */}
             {showResults && uploadResults.length > 0 && (
               <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
                 <div className="p-4 border-b border-slate-200 flex items-center justify-between">
                   <h3 className="font-bold text-slate-900">Upload Results</h3>
-                  <button 
-                    onClick={() => setShowResults(false)}
-                    className="p-1 hover:bg-slate-100 rounded"
-                  >
-                    <X className="w-5 h-5" />
-                  </button>
+                  <button onClick={() => setShowResults(false)} className="p-1 hover:bg-slate-100 rounded"><X className="w-5 h-5" /></button>
                 </div>
                 <div className="divide-y divide-slate-100">
                   {uploadResults.map((result, idx) => (
                     <div key={idx} className="p-4">
                       <div className="flex items-center gap-3 mb-2">
-                        {result.status === 'success' ? (
-                          <CheckCircle className="w-5 h-5 text-emerald-500" />
-                        ) : (
-                          <X className="w-5 h-5 text-red-500" />
-                        )}
+                        {result.status === 'success' ? <CheckCircle className="w-5 h-5 text-emerald-500" /> : <X className="w-5 h-5 text-red-500" />}
                         <span className="font-medium text-slate-900">{result.file}</span>
-                        <span className={`px-2 py-1 text-xs rounded-full ${
-                          result.status === 'success' ? 'bg-emerald-100 text-emerald-700' : 'bg-red-100 text-red-700'
-                        }`}>
-                          {result.status}
-                        </span>
+                        <span className={`px-2 py-1 text-xs rounded-full ${result.status === 'success' ? 'bg-emerald-100 text-emerald-700' : 'bg-red-100 text-red-700'}`}>{result.status}</span>
                       </div>
                       
                       {result.status === 'success' && (
-                        <div className="ml-8 space-y-2">
-                          <p className="text-sm text-slate-600"><strong>Customer:</strong> {result.customer}</p>
-                          <p className="text-sm text-slate-600"><strong>Items Found:</strong> {result.itemsFound}</p>
-                          
-                          {result.items.length > 0 && (
-                            <div className="mt-2">
-                              <p className="text-sm font-medium text-slate-700 mb-1">Extracted Products:</p>
-                              <div className="space-y-1">
-                                {result.items.map((item: any, i: number) => (
-                                  <div key={i} className="flex items-center gap-2 text-sm">
-                                    <span className="font-mono text-slate-500">{item.sku}</span>
-                                    <span className="text-slate-400">×</span>
-                                    <span className="font-medium">{item.quantity}</span>
-                                    <span className="text-slate-600">- {item.description}</span>
-                                  </div>
-                                ))}
-                              </div>
-                            </div>
-                          )}
+                        <div className="ml-8 space-y-1 text-sm">
+                          <p><strong>Customer:</strong> {result.customer}</p>
+                          <p><strong>Invoice #:</strong> {result.invoiceNumber}</p>
+                          <p><strong>Items Found:</strong> {result.itemsFound}</p>
+                          <p><strong>Total:</strong> ${result.total}</p>
+                          <p><strong>Stock Updated:</strong> {result.stockUpdated} items</p>
                         </div>
                       )}
                       
-                      {result.status === 'error' && (
-                        <p className="ml-8 text-sm text-red-600">{result.error}</p>
-                      )}
+                      {result.status === 'error' && <p className="ml-8 text-sm text-red-600">{result.error}</p>}
                     </div>
                   ))}
                 </div>
               </div>
             )}
 
-            {/* Uploaded Invoices List */}
             <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
-              <div className="p-4 border-b border-slate-200">
-                <h3 className="font-bold text-slate-900">Uploaded Invoices ({invoices.length})</h3>
-              </div>
+              <div className="p-4 border-b border-slate-200"><h3 className="font-bold text-slate-900">Uploaded Invoices ({invoices.length})</h3></div>
               <div className="divide-y divide-slate-100">
                 {invoices.map(invoice => (
                   <div key={invoice.id} className="p-4 flex items-center justify-between hover:bg-slate-50">
                     <div>
                       <p className="font-semibold text-slate-900">{invoice.invoice_number}</p>
                       <p className="text-sm text-slate-500">{new Date(invoice.date).toLocaleDateString()}</p>
-                      {invoice.notes && (
-                        <div className="mt-1 text-sm text-slate-600 whitespace-pre-line">{invoice.notes}</div>
-                      )}
+                      {invoice.notes && <div className="mt-1 text-sm text-slate-600 whitespace-pre-line">{invoice.notes}</div>}
                     </div>
                     <div className="flex items-center gap-3">
                       {invoice.pdf_url && (
-                        <a 
-                          href={invoice.pdf_url} 
-                          target="_blank" 
-                          rel="noopener noreferrer"
-                          className="p-2 text-blue-600 hover:bg-blue-50 rounded-lg"
-                          title="View PDF"
-                        >
-                          <FileUp className="w-5 h-5" />
-                        </a>
+                        <a href={invoice.pdf_url} target="_blank" rel="noopener noreferrer" className="p-2 text-blue-600 hover:bg-blue-50 rounded-lg"><FileUp className="w-5 h-5" /></a>
                       )}
-                      
                       <button 
-                        onClick={() => {
-                          if (confirm('Delete this invoice?')) {
-                            supabase.from('invoices').delete().eq('id', invoice.id).then(() => fetchAllData());
-                          }
-                        }}
+                        onClick={() => { if (confirm('Delete?')) supabase.from('invoices').delete().eq('id', invoice.id).then(() => fetchAllData()); }}
                         className="p-2 text-red-400 hover:text-red-600 hover:bg-red-50 rounded-lg"
-                        title="Delete"
                       >
                         <Trash2 className="w-5 h-5" />
                       </button>
@@ -828,10 +571,7 @@ function App() {
                   </div>
                 ))}
                 {invoices.length === 0 && (
-                  <div className="p-8 text-center text-slate-400">
-                    <FileText className="w-12 h-12 mx-auto mb-4" />
-                    <p>No invoices uploaded yet</p>
-                  </div>
+                  <div className="p-8 text-center text-slate-400"><FileText className="w-12 h-12 mx-auto mb-4" /><p>No invoices uploaded yet</p></div>
                 )}
               </div>
             </div>
