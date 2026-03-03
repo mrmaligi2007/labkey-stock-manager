@@ -50,6 +50,23 @@ function App() {
   }, []);
 
   useEffect(() => {
+    // Load invoices from localStorage
+    const savedInvoices = localStorage.getItem('labkey_invoices');
+    if (savedInvoices) {
+      try {
+        setInvoices(JSON.parse(savedInvoices));
+      } catch (e) {
+        console.error('Failed to parse saved invoices');
+      }
+    }
+  }, []);
+
+  useEffect(() => {
+    // Save invoices to localStorage whenever they change
+    localStorage.setItem('labkey_invoices', JSON.stringify(invoices));
+  }, [invoices]);
+
+  useEffect(() => {
     if (authChecked && session) {
       fetchAllData();
     } else if (authChecked && !session) {
@@ -60,12 +77,9 @@ function App() {
   async function fetchAllData() {
     setLoading(true);
     try {
-      const [{ data: productsData }, { data: invoicesData }] = await Promise.all([
-        supabase.from('products').select('*').order('product_code'),
-        supabase.from('invoices').select('*').order('date', { ascending: false })
-      ]);
+      const { data: productsData } = await supabase.from('products').select('*').order('product_code');
       setProducts(productsData || initialProducts);
-      setInvoices(invoicesData || []);
+      // Invoices are loaded from localStorage in useEffect
     } catch (err) {
       setProducts(initialProducts);
     } finally {
@@ -183,27 +197,35 @@ Important:
       const file = files[i];
       
       try {
-        const fileName = `invoices/${Date.now()}_${file.name}`;
-        const { error: uploadError } = await supabase.storage.from('invoices').upload(fileName, file);
-        if (uploadError) throw uploadError;
-
-        const { data: { publicUrl } } = supabase.storage.from('invoices').getPublicUrl(fileName);
+        // Convert PDF to base64 for local storage
+        const base64Data = await new Promise<string>((resolve) => {
+          const reader = new FileReader();
+          reader.onloadend = () => {
+            const base64 = reader.result as string;
+            resolve(base64);
+          };
+          reader.readAsDataURL(file);
+        });
 
         setProcessingAI(true);
         const extractedData = await extractInvoiceDataWithGemini(file);
         setProcessingAI(false);
 
-        const { error: invoiceError } = await supabase.from('invoices').insert([{
+        // Create invoice object and save to local state
+        const newInvoice = {
+          id: `local-${Date.now()}-${i}`,
           invoice_number: extractedData.invoice_number || `INV-${Date.now()}-${i}`,
           customer_id: null,
           total_amount: extractedData.total || 0,
           status: 'pending',
           notes: `Customer: ${extractedData.customer_name}\nDate: ${extractedData.invoice_date}\nItems: ${extractedData.items.length}\nTotal: $${extractedData.total}`,
-          pdf_url: publicUrl,
-          extracted_data: extractedData
-        }]);
+          pdf_url: base64Data, // Store as base64 data URL
+          extracted_data: extractedData,
+          date: new Date().toISOString()
+        };
 
-        if (invoiceError) throw invoiceError;
+        // Add to invoices array (localStorage only)
+        setInvoices(prev => [newInvoice, ...prev]);
 
         let stockUpdated = 0;
         for (const item of extractedData.items) {
@@ -239,7 +261,6 @@ Important:
     setUploadResults(results);
     setShowResults(true);
     setUploading(false);
-    fetchAllData();
   };
 
   const toggleCategory = (category: string) => {
@@ -562,7 +583,7 @@ Important:
                         <a href={invoice.pdf_url} target="_blank" rel="noopener noreferrer" className="p-2 text-blue-600 hover:bg-blue-50 rounded-lg"><FileUp className="w-5 h-5" /></a>
                       )}
                       <button 
-                        onClick={() => { if (confirm('Delete?')) supabase.from('invoices').delete().eq('id', invoice.id).then(() => fetchAllData()); }}
+                        onClick={() => { if (confirm('Delete this invoice?')) setInvoices(prev => prev.filter(i => i.id !== invoice.id)); }}
                         className="p-2 text-red-400 hover:text-red-600 hover:bg-red-50 rounded-lg"
                       >
                         <Trash2 className="w-5 h-5" />
