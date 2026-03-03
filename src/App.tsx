@@ -1,69 +1,118 @@
-import { useState, useMemo } from 'react';
-import { Package, Search, AlertTriangle, TrendingDown, Grid, List, Plus, Minus, Download, RefreshCw } from 'lucide-react';
+import { useState, useMemo, useEffect } from 'react';
+import { Package, Search, AlertTriangle, TrendingDown, Grid, List, Plus, Minus, Download, RefreshCw, LogOut, User } from 'lucide-react';
 import { useProducts } from './hooks/useProducts';
 import { StockChart } from './components/StockChart';
-import { CategoryChart } from './components/CategoryChart';
+import { Auth } from './components/Auth';
+import { supabase } from './lib/supabase';
 import { initialProducts } from './data/products';
 
 function App() {
-  const { products, loading, error, updateStock, refresh } = useProducts();
+  const [session, setSession] = useState<any>(null);
+  const [products, setProducts] = useState<any[]>([]);
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedCategory, setSelectedCategory] = useState('All');
   const [viewMode, setViewMode] = useState<'grid' | 'list'>('grid');
   const [showLowStockOnly, setShowLowStockOnly] = useState(false);
   const [updating, setUpdating] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
 
-  // Use local data if Supabase is empty or error
-  const displayProducts = products.length > 0 ? products : initialProducts.map(p => ({
-    id: p.productCode,
-    product_code: p.productCode,
-    description: p.description,
-    in_stock: p.inStock,
-    category: p.category,
-    rele_count: p.releCount,
-    min_stock: p.minStock || 0
-  }));
+  // Check auth session on mount
+  useEffect(() => {
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      setSession(session);
+    });
+
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+      setSession(session);
+    });
+
+    return () => subscription.unsubscribe();
+  }, []);
+
+  // Fetch products
+  useEffect(() => {
+    fetchProducts();
+  }, []);
+
+  async function fetchProducts() {
+    setLoading(true);
+    try {
+      const { data, error } = await supabase
+        .from('products')
+        .select('*')
+        .order('product_code');
+      
+      if (error) throw error;
+      setProducts(data || initialProducts);
+    } catch (err) {
+      console.error('Error fetching products:', err);
+      setProducts(initialProducts);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  const handleSignOut = async () => {
+    await supabase.auth.signOut();
+  };
+
+  // If not logged in, show Auth component
+  if (!session) {
+    return <Auth onAuthSuccess={() => fetchProducts()} />;
+  }
 
   const filteredProducts = useMemo(() => {
-    return displayProducts.filter(product => {
+    return products.filter(product => {
       const matchesSearch = product.description.toLowerCase().includes(searchTerm.toLowerCase()) ||
                           product.product_code.toLowerCase().includes(searchTerm.toLowerCase());
       const matchesCategory = selectedCategory === 'All' || product.category === selectedCategory;
-      const matchesLowStock = !showLowStockOnly || (product.in_stock <= product.min_stock);
+      const matchesLowStock = !showLowStockOnly || (product.in_stock <= (product.min_stock || 0));
       return matchesSearch && matchesCategory && matchesLowStock;
     });
-  }, [displayProducts, searchTerm, selectedCategory, showLowStockOnly]);
+  }, [products, searchTerm, selectedCategory, showLowStockOnly]);
 
   const categories = useMemo(() => {
-    return ['All', ...new Set(displayProducts.map(p => p.category))];
-  }, [displayProducts]);
+    return ['All', ...new Set(products.map(p => p.category))];
+  }, [products]);
 
   const stats = useMemo(() => {
-    const totalProducts = displayProducts.length;
-    const totalStock = displayProducts.reduce((sum, p) => sum + p.in_stock, 0);
-    const lowStock = displayProducts.filter(p => p.in_stock <= p.min_stock).length;
-    const outOfStock = displayProducts.filter(p => p.in_stock === 0).length;
+    const totalProducts = products.length;
+    const totalStock = products.reduce((sum, p) => sum + p.in_stock, 0);
+    const lowStock = products.filter(p => p.in_stock <= (p.min_stock || 0)).length;
+    const outOfStock = products.filter(p => p.in_stock === 0).length;
     return { totalProducts, totalStock, lowStock, outOfStock };
-  }, [displayProducts]);
+  }, [products]);
 
   const handleUpdateStock = async (productCode: string, delta: number) => {
-    const product = displayProducts.find(p => p.product_code === productCode);
+    const product = products.find(p => p.product_code === productCode);
     if (!product) return;
     
     const newStock = Math.max(0, product.in_stock + delta);
     
     setUpdating(productCode);
-    const success = await updateStock(productCode, newStock);
-    setUpdating(null);
-    
-    if (!success) {
+    try {
+      const { error } = await supabase
+        .from('products')
+        .update({ in_stock: newStock, updated_at: new Date().toISOString() })
+        .eq('product_code', productCode);
+
+      if (error) throw error;
+      
+      setProducts(prev => prev.map(p => 
+        p.product_code === productCode 
+          ? { ...p, in_stock: newStock, updated_at: new Date().toISOString() }
+          : p
+      ));
+    } catch (err) {
       alert('Failed to update stock. Please try again.');
+    } finally {
+      setUpdating(null);
     }
   };
 
   const exportCSV = () => {
     const headers = ['Product Code', 'Description', 'In Stock', 'Category', 'Rele Count', 'Min Stock'];
-    const rows = displayProducts.map(p => [p.product_code, p.description, p.in_stock, p.category, p.rele_count, p.min_stock]);
+    const rows = products.map(p => [p.product_code, p.description, p.in_stock, p.category, p.rele_count, p.min_stock]);
     const csv = [headers, ...rows].map(row => row.join(',')).join('\n');
     const blob = new Blob([csv], { type: 'text/csv' });
     const url = URL.createObjectURL(blob);
@@ -96,14 +145,12 @@ function App() {
               </div>
               <div>
                 <h1 className="text-xl font-bold text-gray-900">LabKey Stock Manager</h1>
-                <p className="text-sm text-gray-500">
-                  {products.length > 0 ? 'Connected to Supabase' : 'Using local data'} • Real-time inventory tracking
-                </p>
+                <p className="text-sm text-gray-500">Welcome, {session.user.email}</p>
               </div>
             </div>
             <div className="flex gap-2">
               <button
-                onClick={refresh}
+                onClick={fetchProducts}
                 className="flex items-center gap-2 px-4 py-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 transition-colors"
               >
                 <RefreshCw className="w-4 h-4" />
@@ -116,19 +163,19 @@ function App() {
                 <Download className="w-4 h-4" />
                 Export CSV
               </button>
+              <button
+                onClick={handleSignOut}
+                className="flex items-center gap-2 px-4 py-2 bg-red-100 text-red-600 rounded-lg hover:bg-red-200 transition-colors"
+              >
+                <LogOut className="w-4 h-4" />
+                Sign Out
+              </button>
             </div>
           </div>
         </div>
       </header>
 
       <main className="max-w-7xl mx-auto px-4 py-6">
-        {error && (
-          <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-lg mb-6">
-            <p className="font-medium">Connection Error</p>
-            <p className="text-sm">{error}. Using local data instead.</p>
-          </div>
-        )}
-
         {/* Stats Cards */}
         <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
           <div className="bg-white p-4 rounded-lg shadow-sm border">
@@ -172,16 +219,10 @@ function App() {
           </div>
         </div>
 
-        {/* Charts */}
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
-          <div className="bg-white p-4 rounded-lg shadow-sm border">
-            <h3 className="text-lg font-semibold mb-4">Stock by Category</h3>
-            <CategoryChart products={displayProducts} />
-          </div>
-          <div className="bg-white p-4 rounded-lg shadow-sm border">
-            <h3 className="text-lg font-semibold mb-4">Low Stock Alert</h3>
-            <StockChart products={displayProducts.filter(p => p.in_stock <= p.min_stock)} />
-          </div>
+        {/* Only Stock Chart - Pie Chart Removed */}
+        <div className="bg-white p-4 rounded-lg shadow-sm border mb-6">
+          <h3 className="text-lg font-semibold mb-4">Low Stock Alert</h3>
+          <StockChart products={products.filter(p => p.in_stock <= (p.min_stock || 0))} />
         </div>
 
         {/* Filters */}
@@ -244,7 +285,7 @@ function App() {
               key={product.product_code}
               className={`bg-white rounded-lg shadow-sm border p-4 ${
                 product.in_stock === 0 ? 'border-red-300 bg-red-50' :
-                product.in_stock <= product.min_stock ? 'border-orange-300 bg-orange-50' : ''
+                product.in_stock <= (product.min_stock || 0) ? 'border-orange-300 bg-orange-50' : ''
               }`}
             >
               <div className="flex justify-between items-start mb-2">
@@ -262,7 +303,7 @@ function App() {
                   <p className="text-sm text-gray-500">In Stock</p>
                   <p className={`text-2xl font-bold ${
                     product.in_stock === 0 ? 'text-red-600' :
-                    product.in_stock <= product.min_stock ? 'text-orange-600' : 'text-green-600'
+                    product.in_stock <= (product.min_stock || 0) ? 'text-orange-600' : 'text-green-600'
                   }`}>
                     {product.in_stock}
                   </p>
